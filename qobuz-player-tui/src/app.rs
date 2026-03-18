@@ -503,21 +503,48 @@ async fn fetch_image(image_url: &str) -> Option<(StatefulProtocol, f32)> {
     let img_bytes = response.bytes().await.ok()?;
 
     let image = load_from_memory(&img_bytes).ok()?;
-    let ratio = image.width() as f32 / image.height() as f32;
 
     let mut picker = Picker::from_query_stdio().ok()?;
 
-    // ratatui-image 10.0.6 blacklists kitty/sixel for WezTerm and Konsole, but those
-    // terminals support kitty protocol well. Restore it when running inside them.
+    // ratatui-image 10.0.6 blacklists kitty/sixel for WezTerm and Konsole because the
+    // Kitty "append" optimization introduced in 10.0.5 requires terminal-side image
+    // placeholders that WezTerm/Konsole don't implement. Work around per terminal:
+    // - WezTerm: use iTerm2 inline protocol (no server-side caching, always re-sends)
+    // - Konsole: restore Kitty (basic Kitty rendering works, placeholder not needed)
     if picker.protocol_type() == ProtocolType::Halfblocks {
         let is_wezterm = std::env::var("WEZTERM_EXECUTABLE").is_ok_and(|s| !s.is_empty());
         let is_konsole = std::env::var("KONSOLE_VERSION").is_ok_and(|s| !s.is_empty());
-        if is_wezterm || is_konsole {
+        if is_wezterm {
+            picker.set_protocol_type(ProtocolType::Iterm2);
+        } else if is_konsole {
             picker.set_protocol_type(ProtocolType::Kitty);
         }
     }
 
-    Some((picker.new_resize_protocol(image), ratio))
+    // Compute columns-per-row ratio using the picker's actual cell pixel dimensions,
+    // so the image column width is exact and leaves no empty cells on the right.
+    let font_size = picker.font_size();
+    let (cw, ch) = (font_size.0 as u32, font_size.1 as u32);
+
+    // Crop to a centered square aligned to lcm(cell_w, cell_h) pixels.
+    // This guarantees that Resize::Fit produces pixel-exact cell-aligned dimensions,
+    // eliminating the 1-pixel background-fill artifact at the bottom edge.
+    // (Album art is universally square; cropping at most cell_lcm-1 px per side.)
+    let g = { let (mut a, mut b) = (cw, ch); while b != 0 { let t = b; b = a % b; a = t; } a };
+    let cell_lcm = cw / g * ch;
+    let min_dim = image.width().min(image.height());
+    let aligned = (min_dim / cell_lcm) * cell_lcm;
+    let image = image.crop_imm(
+        (image.width() - aligned) / 2,
+        (image.height() - aligned) / 2,
+        aligned,
+        aligned,
+    );
+
+    let display_ratio = (image.width() as f32 / image.height() as f32)
+        * (ch as f32 / cw as f32);
+
+    Some((picker.new_resize_protocol(image), display_ratio))
 }
 
 pub async fn get_current_state(tracklist: Tracklist, status: Status) -> NowPlayingState {

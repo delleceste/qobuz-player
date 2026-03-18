@@ -29,20 +29,21 @@ pub fn render(
 
     let title = get_status(state.status).to_string();
     let block = block(Some(&title));
+    let inner_area = block.inner(area);
 
     let length = state
         .image
         .as_ref()
-        .map(|image| image.1 * (area.height * 2 - 1) as f32)
-        .map(|x| x as u16)
+        .map(|image| image.1 * inner_area.height as f32)
+        .map(|x| x.round() as u16)
         .unwrap_or(0);
 
     let chunks = match disable_tui_album_cover {
-        true => std::rc::Rc::new([block.inner(area)]),
+        true => std::rc::Rc::new([inner_area]),
         false => Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(length), Constraint::Min(1)])
-            .split(block.inner(area)),
+            .split(inner_area),
     };
 
     if !full_screen {
